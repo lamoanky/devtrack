@@ -216,3 +216,5 @@ src/
 - LaTeX preview is a renderer for the common resume macros, not a TeX engine.
   It is there for a fast visual check; compile the real PDF in Overleaf (an
   `embed` document is the right home for that).
+#   d e v t r a c k  
+ 
