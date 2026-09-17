@@ -13,9 +13,9 @@ function isoWeekStart(date) {
   return d.toISOString().slice(0, 10)
 }
 
-stats.get('/', (_req, res) => {
-  const apps = read().applications
-  const resumes = read().resumes
+stats.get('/', (req, res) => {
+  const apps = read(req.user.id).applications
+  const resumes = read(req.user.id).resumes
 
   const byStatus = Object.fromEntries(STATUSES.map((s) => [s, 0]))
   for (const app of apps) byStatus[app.status] = (byStatus[app.status] ?? 0) + 1

@@ -1,8 +1,12 @@
 /**
- * First-run demo data. Runs only when the database is empty, so real data is
- * never overwritten. `npm run seed` passes --force to reset deliberately.
+ * Demo data. New accounts always start with an empty workspace; this loads the
+ * sample applications and resumes into one account on request:
+ *
+ *   npm run seed -- <username>           only if that workspace is empty
+ *   npm run seed -- <username> --force   replace whatever is there
  */
 import { read, replaceAll, id, now } from './db.js'
+import { findUserByUsername } from './auth.js'
 
 const day = 86_400_000
 
@@ -337,18 +341,31 @@ function buildSeed() {
   return { applications, resumes }
 }
 
-/** Populate the database only if it is empty (or --force was passed). */
-export async function ensureSeed({ force = false } = {}) {
-  const state = read()
+/** Populate a user's workspace only if it is empty (or --force was passed). */
+export async function ensureSeed(userId, { force = false } = {}) {
+  const state = read(userId)
   if (!force && (state.applications.length || state.resumes.length)) return false
-  await replaceAll(buildSeed())
+  await replaceAll(userId, buildSeed())
   console.log(`[seed] wrote demo data at ${now()}`)
   return true
 }
 
-// `npm run seed` executes this file directly.
+// `npm run seed -- <username>` executes this file directly.
 if (process.argv[1]?.replace(/\\/g, '/').endsWith('server/seed.js')) {
   const force = process.argv.includes('--force')
-  const seeded = await ensureSeed({ force })
-  if (!seeded) console.log('[seed] database already has data — pass --force to reset it')
+  const username = process.argv.slice(2).find((arg) => !arg.startsWith('--'))
+  const user = username ? findUserByUsername(username) : undefined
+
+  if (!user) {
+    console.error(
+      username
+        ? `[seed] no account named "${username}" — sign up in the app first`
+        : '[seed] usage: npm run seed -- <username> [--force]',
+    )
+    process.exit(1)
+  }
+
+  const seeded = await ensureSeed(user.id, { force })
+  if (!seeded) console.log('[seed] that workspace already has data — pass --force to replace it')
+  process.exit(0)
 }

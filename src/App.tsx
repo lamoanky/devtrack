@@ -1,20 +1,27 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { Shell } from './components/Shell'
 import { ApplicationForm } from './components/ApplicationForm'
 import { ToastProvider, useToast } from './components/Toast'
+import { DialogProvider } from './components/Dialog'
 import { Applications } from './pages/Applications'
 import { ResumeWorkspace } from './pages/ResumeWorkspace'
 import { Analytics } from './pages/Analytics'
 import { Settings } from './pages/Settings'
-import { api } from './lib/api'
+import { Login } from './pages/Login'
+import { api, setUnauthorizedHandler } from './lib/api'
 import { useAsync } from './hooks/useAsync'
-import type { Application, ApplicationDraft, Settings as SettingsShape } from './types'
+import type { Application, ApplicationDraft, Settings as SettingsShape, User } from './types'
 
 /** Used until the real settings land, so no child has to handle `undefined`. */
 const FALLBACK_SETTINGS: SettingsShape = { defaultResumeId: null, defaultResumeMode: 'link' }
 
-function Workspace() {
+interface WorkspaceProps {
+  user: User
+  onSignOut: () => void
+}
+
+function Workspace({ user, onSignOut }: WorkspaceProps) {
   const [search, setSearch] = useState('')
   const [revision, setRevision] = useState(0)
   const [formOpen, setFormOpen] = useState(false)
@@ -58,7 +65,13 @@ function Workspace() {
 
   return (
     <>
-      <Shell search={search} onSearch={setSearch} onNewApplication={openNew}>
+      <Shell
+        search={search}
+        onSearch={setSearch}
+        onNewApplication={openNew}
+        user={user}
+        onSignOut={onSignOut}
+      >
         <Routes>
           <Route path="/" element={<Navigate to="/applications" replace />} />
           <Route
@@ -129,9 +142,45 @@ function Workspace() {
 }
 
 export default function App() {
+  // undefined while the session check is in flight, null when signed out.
+  const [user, setUser] = useState<User | null | undefined>(undefined)
+
+  useEffect(() => {
+    api.auth.me().then(
+      ({ user }) => setUser(user),
+      () => setUser(null),
+    )
+    // Any API call that finds the session expired drops back to the login screen.
+    setUnauthorizedHandler(() => setUser(null))
+    return () => setUnauthorizedHandler(null)
+  }, [])
+
+  const signOut = useCallback(async () => {
+    try {
+      await api.auth.logout()
+    } finally {
+      setUser(null)
+    }
+  }, [])
+
+  if (user === undefined) {
+    return (
+      <div className="flex h-full items-center justify-center text-on-surface-variant">
+        Loading…
+      </div>
+    )
+  }
+
   return (
     <ToastProvider>
-      <Workspace />
+      <DialogProvider>
+        {user ? (
+          // Keyed by account so nothing from one user's session carries into the next.
+          <Workspace key={user.id} user={user} onSignOut={signOut} />
+        ) : (
+          <Login onSignedIn={setUser} />
+        )}
+      </DialogProvider>
     </ToastProvider>
   )
 }

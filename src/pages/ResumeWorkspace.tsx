@@ -2,14 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { api } from '../lib/api'
 import { useAsync } from '../hooks/useAsync'
+import { usePersistentState } from '../hooks/usePersistentState'
 import { Icon } from '../components/Icon'
+import { Menu, MenuDivider, MenuItem } from '../components/Menu'
 import { EmptyState } from '../components/EmptyState'
 import { ResumeEditor } from '../components/ResumeEditor'
 import { ResumePreview } from '../components/ResumePreview'
 import { ResumeSettings } from '../components/ResumeSettings'
 import { useToast } from '../components/Toast'
+import { useDialog } from '../components/Dialog'
+import { SaveVersionDialog } from '../components/SaveVersionDialog'
 import { formatDateTime, relativeTime } from '../lib/format'
 import { IMPORT_ACCEPT, describeImport, importResumeFiles } from '../lib/importResumes'
+import { downloadResumePdf } from '../lib/printResume'
 import type { Application, Resume, ResumeDraft, Settings as SettingsShape } from '../types'
 
 interface Props {
@@ -36,11 +41,14 @@ export function ResumeWorkspace({
   const navigate = useNavigate()
   const [params, setParams] = useSearchParams()
   const { attempt, notify } = useToast()
+  const dialog = useDialog()
 
   const [rail, setRail] = useState<Rail>('documents')
+  const [railCollapsed, setRailCollapsed] = usePersistentState('devtrack.resumeRailCollapsed', false)
   const [filter, setFilter] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [creating, setCreating] = useState(false)
+  const [versionDialogOpen, setVersionDialogOpen] = useState(false)
   const [importing, setImporting] = useState(false)
   const importInput = useRef<HTMLInputElement>(null)
 
@@ -137,21 +145,22 @@ export function ResumeWorkspace({
     )
   }, [resumes, filter])
 
-  const saveVersion = async () => {
+  const openSaveVersion = async () => {
     if (!resume) return
+    // Snapshot what's on screen, not the last autosave.
     if (dirty) await persist(buffer)
-    const label = window.prompt('Version label', suggestLabel(resume))
-    if (label === null) return
-    const note = window.prompt('What changed in this version?', '') ?? ''
-    const created = await attempt(
-      () => api.resumes.saveVersion(resume.id, { label: label.trim(), note }),
-      'Version saved',
-    )
-    if (created) {
-      detail.refresh()
-      onChanged()
-      setRail('versions')
-    }
+    setVersionDialogOpen(true)
+  }
+
+  const saveVersion = async (draft: { label: string; note: string }) => {
+    if (!resume) return
+    const created = await attempt(() => api.resumes.saveVersion(resume.id, draft), 'Version saved')
+    if (!created) return
+    setVersionDialogOpen(false)
+    detail.refresh()
+    onChanged()
+    setRail('versions')
+    setRailCollapsed(false)
   }
 
   const restore = async (versionId: string) => {
@@ -171,7 +180,14 @@ export function ResumeWorkspace({
 
   const fork = async () => {
     if (!resume) return
-    const company = window.prompt('Tailor this resume for which company?', '')
+    const company = await dialog.prompt({
+      title: 'Fork for another company',
+      body: 'Makes a copy of this resume to tailor. It links to the application with the same company name, if there is one.',
+      label: 'Company',
+      placeholder: 'e.g. Stripe',
+      confirmLabel: 'Create fork',
+      required: true,
+    })
     if (!company?.trim()) return
     const slug = company.trim().toLowerCase().replace(/\W+/g, '_')
     const extension = resume.format === 'latex' ? 'tex' : 'md'
@@ -219,10 +235,15 @@ export function ResumeWorkspace({
   const removeResume = async () => {
     if (!resume) return
     const isDefault = settings.defaultResumeId === resume.id
-    const warning = isDefault
-      ? `${resume.name} is your default resume. Delete it? New applications will stop getting a resume, and every version goes with it.`
-      : `Delete ${resume.name}? Every version goes with it.`
-    if (!window.confirm(warning)) return
+    const confirmed = await dialog.confirm({
+      title: `Delete ${resume.name}?`,
+      body: isDefault
+        ? 'This is your default resume, so new applications will stop getting one. Every saved version is deleted too.'
+        : 'Every saved version is deleted too.',
+      confirmLabel: 'Delete document',
+      danger: true,
+    })
+    if (!confirmed) return
     const done = await attempt(async () => {
       await api.resumes.remove(resume.id)
       return true
@@ -274,9 +295,70 @@ export function ResumeWorkspace({
     onChanged()
   }
 
+  const newResume = () => {
+    setCreating(true)
+    setSettingsOpen(true)
+  }
+
+  /** Open the rail on a given tab — used by the icon strip when collapsed. */
+  const showRail = (tab: Rail) => {
+    setRail(tab)
+    setRailCollapsed(false)
+  }
+
   return (
     <div className="flex h-full min-h-0">
+      <input
+        ref={importInput}
+        type="file"
+        multiple
+        accept={IMPORT_ACCEPT}
+        className="hidden"
+        onChange={(event) => {
+          void runImport(event.target.files)
+          event.target.value = ''
+        }}
+      />
+
       {/* Documents / versions rail */}
+      {railCollapsed ? (
+        <aside className="flex w-11 shrink-0 flex-col items-center gap-xs border-r border-outline-variant bg-surface py-sm">
+          <button
+            className="btn-ghost btn-sm px-[6px]"
+            title="Show documents & versions"
+            aria-label="Show documents & versions"
+            aria-expanded={false}
+            onClick={() => setRailCollapsed(false)}
+          >
+            <Icon name="left_panel_open" size={18} />
+          </button>
+          <span className="my-xs h-px w-6 bg-outline-variant" />
+          <button
+            className="btn-ghost btn-sm px-[6px]"
+            title="Documents"
+            aria-label="Documents"
+            onClick={() => showRail('documents')}
+          >
+            <Icon name="description" size={18} />
+          </button>
+          <button
+            className="btn-ghost btn-sm px-[6px]"
+            title="Versions"
+            aria-label="Versions"
+            onClick={() => showRail('versions')}
+          >
+            <Icon name="history" size={18} />
+          </button>
+          <button
+            className="btn-ghost btn-sm px-[6px]"
+            title="New resume"
+            aria-label="New resume"
+            onClick={newResume}
+          >
+            <Icon name="add_box" size={18} />
+          </button>
+        </aside>
+      ) : (
       <aside className="flex w-64 shrink-0 flex-col border-r border-outline-variant bg-surface">
         <div className="flex items-center gap-xs border-b border-outline-variant p-sm">
           <div className="flex flex-1 rounded-md border border-outline-variant bg-background p-[2px]">
@@ -294,53 +376,44 @@ export function ResumeWorkspace({
               </button>
             ))}
           </div>
-          <input
-            ref={importInput}
-            type="file"
-            multiple
-            accept={IMPORT_ACCEPT}
-            className="hidden"
-            onChange={(event) => {
-              void runImport(event.target.files)
-              event.target.value = ''
-            }}
-          />
-          <button
-            className="btn-ghost btn-sm"
-            title="Import resumes (.md, .tex, .html, or a DevTrack .json bundle)"
-            disabled={importing}
-            onClick={() => importInput.current?.click()}
-          >
-            <Icon name={importing ? 'hourglass_top' : 'upload_file'} size={20} />
+          <button className="btn-ghost btn-sm px-[6px]" title="New resume" onClick={newResume}>
+            <Icon name="add_box" size={18} />
           </button>
-          <a
-            className="btn-ghost btn-sm"
-            title="Export every resume as a JSON bundle"
-            href={api.resumeBundleUrl()}
-          >
-            <Icon name="download" size={20} />
-          </a>
           <button
-            className="btn-ghost btn-sm"
-            title="New resume"
-            onClick={() => {
-              setCreating(true)
-              setSettingsOpen(true)
-            }}
+            className="btn-ghost btn-sm px-[6px]"
+            title="Hide panel"
+            aria-label="Hide documents & versions"
+            aria-expanded
+            onClick={() => setRailCollapsed(true)}
           >
-            <Icon name="add_box" size={20} />
+            <Icon name="left_panel_close" size={18} />
           </button>
         </div>
 
         {rail === 'documents' ? (
           <>
-            <div className="border-b border-outline-variant p-sm">
+            <div className="flex items-center gap-xs border-b border-outline-variant p-sm">
               <input
-                className="field"
+                className="field min-w-0 flex-1"
                 placeholder="Filter documents…"
                 value={filter}
                 onChange={(event) => setFilter(event.target.value)}
               />
+              <button
+                className="btn-ghost btn-sm px-[6px]"
+                title="Import resumes (.pdf → LaTeX, .md, .tex, .html, or a DevTrack .json bundle)"
+                disabled={importing}
+                onClick={() => importInput.current?.click()}
+              >
+                <Icon name={importing ? 'hourglass_top' : 'upload_file'} size={18} />
+              </button>
+              <a
+                className="btn-ghost btn-sm px-[6px]"
+                title="Export every resume as a JSON bundle"
+                href={api.resumeBundleUrl()}
+              >
+                <Icon name="download" size={18} />
+              </a>
             </div>
             <ul className="min-h-0 flex-1 space-y-[2px] overflow-y-auto p-sm">
               {visible.map((item) => {
@@ -413,7 +486,13 @@ export function ResumeWorkspace({
                         title="Delete version"
                         onClick={async () => {
                           if (!resume) return
-                          if (!window.confirm(`Delete version ${version.label}?`)) return
+                          const confirmed = await dialog.confirm({
+                            title: `Delete version ${version.label}?`,
+                            body: 'The current document is not affected.',
+                            confirmLabel: 'Delete version',
+                            danger: true,
+                          })
+                          if (!confirmed) return
                           const ok = await attempt(async () => {
                             await api.resumes.deleteVersion(resume.id, version.id)
                             return true
@@ -442,6 +521,7 @@ export function ResumeWorkspace({
           </ul>
         )}
       </aside>
+      )}
 
       {/* Editor + preview */}
       {!resume ? (
@@ -451,13 +531,7 @@ export function ResumeWorkspace({
             title={loading ? 'Loading…' : 'No resume selected'}
             body="Create a document, then tailor a copy for each company you apply to."
             action={
-              <button
-                className="btn-primary"
-                onClick={() => {
-                  setCreating(true)
-                  setSettingsOpen(true)
-                }}
-              >
+              <button className="btn-primary" onClick={newResume}>
                 <Icon name="add" size={16} />
                 New resume
               </button>
@@ -467,7 +541,7 @@ export function ResumeWorkspace({
       ) : (
         <>
           <section className="flex min-h-0 min-w-0 flex-1 flex-col border-r border-outline-variant">
-            <div className="flex h-12 shrink-0 items-center justify-between gap-sm border-b border-outline-variant bg-surface px-md">
+            <div className="flex h-12 shrink-0 items-center justify-between gap-sm border-b border-outline-variant bg-surface px-sm">
               <div className="flex min-w-0 items-center gap-xs">
                 <span className="truncate font-mono text-code-md text-on-surface">
                   {resume.name}
@@ -478,7 +552,7 @@ export function ResumeWorkspace({
               <div className="flex shrink-0 items-center gap-xs">
                 <label className="relative inline-flex cursor-pointer items-center gap-xs rounded-md border border-outline-variant bg-background px-sm py-[3px] text-body-sm shadow-card hover:bg-surface-container-high">
                   <Icon name="link" size={14} className="text-primary" />
-                  <span className="max-w-[140px] truncate">
+                  <span className="max-w-[120px] truncate">
                     {resume.applicationId
                       ? (applicationsById.get(resume.applicationId)?.company ?? 'Linked')
                       : 'Link to app'}
@@ -500,54 +574,83 @@ export function ResumeWorkspace({
                 </label>
 
                 <button
-                  className={`btn-sm ${
-                    settings.defaultResumeId === resume.id ? 'btn-default text-attention' : 'btn-default'
+                  className={`btn-ghost btn-sm px-[6px] ${
+                    settings.defaultResumeId === resume.id ? 'text-attention hover:text-attention' : ''
                   }`}
                   onClick={toggleDefault}
+                  aria-pressed={settings.defaultResumeId === resume.id}
                   title={
                     settings.defaultResumeId === resume.id
-                      ? 'This is the default for new applications — click to clear'
-                      : 'Use this resume for every new application'
+                      ? 'Default for new applications — click to clear'
+                      : 'Set as default for new applications'
                   }
                 >
-                  <Icon
-                    name="star"
-                    size={14}
-                    fill={settings.defaultResumeId === resume.id}
-                  />
-                  {settings.defaultResumeId === resume.id ? 'Default' : 'Set default'}
+                  <Icon name="star" size={16} fill={settings.defaultResumeId === resume.id} />
                 </button>
 
-                <a
-                  className="btn-default btn-sm"
-                  href={api.resumeDownloadUrl(resume.id)}
-                  title="Export this document as its source file"
-                >
-                  <Icon name="download" size={14} />
-                  Export
-                </a>
-
-                <button className="btn-default btn-sm" onClick={fork} title="Tailor a copy">
-                  <Icon name="fork_right" size={14} />
-                  Fork
-                </button>
-                <button className="btn-primary btn-sm" onClick={saveVersion}>
+                <button className="btn-primary btn-sm whitespace-nowrap" onClick={() => void openSaveVersion()}>
                   <Icon name="history" size={14} />
                   Save version
                 </button>
-                <button
-                  className="btn-ghost btn-sm"
-                  title="Document settings"
-                  onClick={() => {
-                    setCreating(false)
-                    setSettingsOpen(true)
-                  }}
+
+                <Menu
+                  label="More actions"
+                  triggerClassName="btn-ghost btn-sm px-[6px]"
+                  trigger={<Icon name="more_horiz" size={18} />}
                 >
-                  <Icon name="settings" size={16} />
-                </button>
-                <button className="btn-ghost btn-sm" title="Delete document" onClick={removeResume}>
-                  <Icon name="delete" size={16} />
-                </button>
+                  {(close) => (
+                    <>
+                      <MenuItem
+                        icon="fork_right"
+                        onSelect={() => {
+                          close()
+                          void fork()
+                        }}
+                      >
+                        Fork for another company
+                      </MenuItem>
+                      <MenuItem
+                        icon="download"
+                        href={api.resumeDownloadUrl(resume.id)}
+                        onSelect={close}
+                      >
+                        Export source file
+                      </MenuItem>
+                      {resume.format !== 'embed' && (
+                        <MenuItem
+                          icon="picture_as_pdf"
+                          onSelect={() => {
+                            close()
+                            downloadResumePdf(resume, buffer)
+                          }}
+                        >
+                          Download as PDF
+                        </MenuItem>
+                      )}
+                      <MenuItem
+                        icon="settings"
+                        onSelect={() => {
+                          close()
+                          setCreating(false)
+                          setSettingsOpen(true)
+                        }}
+                      >
+                        Document settings
+                      </MenuItem>
+                      <MenuDivider />
+                      <MenuItem
+                        icon="delete"
+                        danger
+                        onSelect={() => {
+                          close()
+                          void removeResume()
+                        }}
+                      >
+                        Delete document
+                      </MenuItem>
+                    </>
+                  )}
+                </Menu>
               </div>
             </div>
 
@@ -578,6 +681,13 @@ export function ResumeWorkspace({
         </>
       )}
 
+      <SaveVersionDialog
+        open={versionDialogOpen && Boolean(resume)}
+        suggestedLabel={resume ? suggestLabel(resume) : ''}
+        onClose={() => setVersionDialogOpen(false)}
+        onSave={saveVersion}
+      />
+
       <ResumeSettings
         open={settingsOpen}
         resume={creating ? undefined : resume}
@@ -605,7 +715,7 @@ function SaveIndicator({
 }) {
   if (saving) {
     return (
-      <span className="flex items-center gap-xs text-body-sm text-on-surface-variant">
+      <span className="flex shrink-0 items-center gap-xs whitespace-nowrap text-body-sm text-on-surface-variant">
         <Icon name="cloud_sync" size={14} />
         Saving…
       </span>
@@ -613,7 +723,7 @@ function SaveIndicator({
   }
   if (dirty) {
     return (
-      <span className="flex items-center gap-xs text-body-sm text-attention">
+      <span className="flex shrink-0 items-center gap-xs whitespace-nowrap text-body-sm text-attention">
         <Icon name="cloud_upload" size={14} />
         Unsaved
       </span>
@@ -621,7 +731,7 @@ function SaveIndicator({
   }
   return (
     <span
-      className="flex items-center gap-xs text-body-sm text-success"
+      className="flex shrink-0 items-center gap-xs whitespace-nowrap text-body-sm text-success"
       title={savedAt ? `Last saved ${formatDateTime(savedAt)}` : undefined}
     >
       <Icon name="cloud_done" size={14} />

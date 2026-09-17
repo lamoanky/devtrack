@@ -13,6 +13,9 @@ interface ModalProps {
 
 const WIDTHS = { sm: 'max-w-md', md: 'max-w-2xl', lg: 'max-w-4xl' }
 
+/** Open dialog panels, oldest first — a dialog can open on top of another. */
+const openPanels: (HTMLDivElement | null)[] = []
+
 export function Modal({
   open,
   title,
@@ -23,22 +26,32 @@ export function Modal({
   width = 'md',
 }: ModalProps) {
   const panel = useRef<HTMLDivElement>(null)
+  // Latest onClose without re-running the open effect (which would steal focus) on every render.
+  const closeRef = useRef(onClose)
+  closeRef.current = onClose
 
-  // Escape to dismiss, and lock the page behind the dialog.
+  // Escape dismisses only the topmost dialog; lock the page behind it.
   useEffect(() => {
     if (!open) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      if (event.key !== 'Escape' || openPanels[openPanels.length - 1] !== panel.current) return
+      // Captured on window and marked handled, so layers underneath (the
+      // application drawer) leave the Escape alone.
+      event.preventDefault()
+      closeRef.current()
     }
-    document.addEventListener('keydown', onKey)
+    const element = panel.current
+    openPanels.push(element)
+    window.addEventListener('keydown', onKey, true)
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    panel.current?.querySelector<HTMLElement>('[data-autofocus]')?.focus()
+    element?.querySelector<HTMLElement>('[data-autofocus]')?.focus()
     return () => {
-      document.removeEventListener('keydown', onKey)
+      openPanels.splice(openPanels.indexOf(element), 1)
+      window.removeEventListener('keydown', onKey, true)
       document.body.style.overflow = previousOverflow
     }
-  }, [open, onClose])
+  }, [open])
 
   if (!open) return null
 

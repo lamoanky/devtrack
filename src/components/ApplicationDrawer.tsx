@@ -26,7 +26,8 @@ export function ApplicationDrawer({
   useEffect(() => {
     if (!application) return
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') onClose()
+      // A dialog opened over the drawer handles its own Escape first.
+      if (event.key === 'Escape' && !event.defaultPrevented) onClose()
     }
     document.addEventListener('keydown', onKey)
     return () => document.removeEventListener('keydown', onKey)
@@ -206,7 +207,7 @@ export function ApplicationDrawer({
         </div>
 
         <footer className="flex items-center justify-between gap-sm border-t border-outline-variant bg-surface px-md py-sm">
-          <button className="btn-danger btn-sm" onClick={() => onDelete(application)}>
+          <button className="btn-danger" onClick={() => onDelete(application)}>
             <Icon name="delete" size={16} />
             Delete
           </button>

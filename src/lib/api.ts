@@ -6,6 +6,7 @@ import type {
   ResumeVersion,
   Settings,
   Stats,
+  User,
 } from '../types'
 
 const BASE = '/api'
@@ -18,6 +19,12 @@ export class ApiError extends Error {
     super(message)
     this.name = 'ApiError'
   }
+}
+
+/** Called whenever the server says the session is gone, so the app can show the login screen. */
+let onUnauthorized: (() => void) | null = null
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  onUnauthorized = handler
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -37,6 +44,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const payload = text ? (JSON.parse(text) as unknown) : null
 
   if (!response.ok) {
+    if (response.status === 401 && !path.startsWith('/auth/')) onUnauthorized?.()
     const message =
       payload && typeof payload === 'object' && 'error' in payload
         ? String((payload as { error: unknown }).error)
@@ -57,6 +65,21 @@ export interface ApplicationQuery {
 }
 
 export const api = {
+  auth: {
+    config: () => request<{ googleClientId: string | null }>('/auth/config'),
+    me: () => request<{ user: User | null }>('/auth/me'),
+    login: (username: string, password: string) =>
+      request<{ user: User }>('/auth/login', { method: 'POST', body: body({ username, password }) }),
+    register: (username: string, password: string) =>
+      request<{ user: User }>('/auth/register', {
+        method: 'POST',
+        body: body({ username, password }),
+      }),
+    google: (credential: string) =>
+      request<{ user: User }>('/auth/google', { method: 'POST', body: body({ credential }) }),
+    logout: () => request<void>('/auth/logout', { method: 'POST' }),
+  },
+
   applications: {
     list(query: ApplicationQuery = {}) {
       const params = new URLSearchParams()

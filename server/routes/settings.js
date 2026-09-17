@@ -18,14 +18,14 @@ function current(state) {
   }
 }
 
-settings.get('/', (_req, res) => {
-  res.json(current(read()))
+settings.get('/', (req, res) => {
+  res.json(current(read(req.user.id)))
 })
 
 settings.patch('/', async (req, res) => {
   const body = req.body ?? {}
 
-  const updated = await write((state) => {
+  const updated = await write(req.user.id, (state) => {
     if ('defaultResumeId' in body) {
       const value = body.defaultResumeId
       if (value === null || value === '') {

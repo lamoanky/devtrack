@@ -2,6 +2,7 @@ import { useRef, useState, type ReactNode } from 'react'
 import { api } from '../lib/api'
 import { Icon } from '../components/Icon'
 import { useToast } from '../components/Toast'
+import { useDialog } from '../components/Dialog'
 import { IMPORT_ACCEPT, describeImport, importResumeFiles } from '../lib/importResumes'
 import type { Application, Resume, Settings as SettingsShape } from '../types'
 
@@ -14,6 +15,7 @@ interface Props {
 
 export function Settings({ applications, resumes, settings, onChanged }: Props) {
   const { attempt, notify } = useToast()
+  const dialog = useDialog()
   const fileInput = useRef<HTMLInputElement>(null)
   const resumeInput = useRef<HTMLInputElement>(null)
   const [importing, setImporting] = useState(false)
@@ -110,10 +112,14 @@ export function Settings({ applications, resumes, settings, onChanged }: Props) 
   }
 
   const wipe = async () => {
-    const typed = window.prompt(
-      `This deletes all ${applications.length} applications and ${resumes.length} resumes. Type DELETE to confirm.`,
-    )
-    if (typed !== 'DELETE') return
+    const confirmed = await dialog.confirm({
+      title: 'Delete everything?',
+      body: `This permanently deletes all ${applications.length} applications and ${resumes.length} resumes, including every saved version.`,
+      typeToConfirm: 'DELETE',
+      confirmLabel: 'Delete everything',
+      danger: true,
+    })
+    if (!confirmed) return
 
     const done = await attempt(async () => {
       for (const resume of resumes) await api.resumes.remove(resume.id)
@@ -263,7 +269,7 @@ export function Settings({ applications, resumes, settings, onChanged }: Props) 
           />
           <Row
             title="Import resumes"
-            body="A DevTrack .json bundle, or plain .md / .tex / .html files — one new document each."
+            body="A DevTrack .json bundle, or plain .md / .tex / .html files, or a PDF (converted to LaTeX) — one new document each."
             action={
               <>
                 <input
@@ -298,7 +304,7 @@ export function Settings({ applications, resumes, settings, onChanged }: Props) 
         <div className="divide-y divide-outline-variant">
           <Row
             title="Where your data lives"
-            body="A single JSON file on this machine — server/data/db.json. Nothing leaves your computer."
+            body="Your account's workspace in the local SQLite database — server/data/devtrack.db. Other accounts can't see it."
           />
           <Row
             title={`${applications.length} applications · ${resumes.length} resumes`}

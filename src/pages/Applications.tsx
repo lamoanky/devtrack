@@ -8,6 +8,7 @@ import { EmptyState } from '../components/EmptyState'
 import { ApplicationDrawer } from '../components/ApplicationDrawer'
 import { CompanyLogo } from '../components/CompanyLogo'
 import { useToast } from '../components/Toast'
+import { useDialog } from '../components/Dialog'
 import { STATUS_META, LOCATION_ICON } from '../lib/status'
 import { formatDate, relativeTime } from '../lib/format'
 import { STATUSES, type Application, type Resume, type Status } from '../types'
@@ -48,6 +49,7 @@ export function Applications({ search, resumes, onEdit, revision, onChanged }: P
   const [selectedId, setSelectedId] = useState<string | null>(null)
 
   const { attempt, notify } = useToast()
+  const dialog = useDialog()
   const debouncedSearch = useDebounced(search, 250)
 
   const list = useAsync(
@@ -73,9 +75,12 @@ export function Applications({ search, resumes, onEdit, revision, onChanged }: P
 
   const remove = useCallback(
     async (application: Application) => {
-      const confirmed = window.confirm(
-        `Delete the ${application.role} application at ${application.company}? Linked resumes are kept.`,
-      )
+      const confirmed = await dialog.confirm({
+        title: 'Delete application?',
+        body: `The ${application.role} application at ${application.company} and its timeline will be deleted. Linked resumes are kept.`,
+        confirmLabel: 'Delete application',
+        danger: true,
+      })
       if (!confirmed) return
       const done = await attempt(async () => {
         await api.applications.remove(application.id)
@@ -86,7 +91,7 @@ export function Applications({ search, resumes, onEdit, revision, onChanged }: P
         onChanged()
       }
     },
-    [attempt, onChanged],
+    [attempt, dialog, onChanged],
   )
 
   return (

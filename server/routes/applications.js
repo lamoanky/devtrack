@@ -57,7 +57,7 @@ applications.get('/', (req, res) => {
   const { q = '', status = '', locationType = '', sort = 'recent' } = req.query
   const needle = String(q).trim().toLowerCase()
 
-  let rows = read().applications.slice()
+  let rows = read(req.user.id).applications.slice()
 
   if (needle) {
     rows = rows.filter((a) =>
@@ -91,7 +91,7 @@ applications.get('/', (req, res) => {
 })
 
 applications.get('/:id', (req, res) => {
-  res.json(find(read(), req.params.id))
+  res.json(find(read(req.user.id), req.params.id))
 })
 
 applications.post('/', async (req, res) => {
@@ -123,7 +123,7 @@ applications.post('/', async (req, res) => {
     updatedAt: timestamp,
   }
 
-  const stored = await write((state) => {
+  const stored = await write(req.user.id, (state) => {
     // A caller that said nothing about a resume gets the configured default.
     // Saying `resumeId: null` explicitly means "none" and is left alone.
     if (!('resumeId' in patch)) {
@@ -156,7 +156,7 @@ applications.post('/', async (req, res) => {
 applications.patch('/:id', async (req, res) => {
   const patch = validate(pick(req.body ?? {}, EDITABLE))
 
-  const updated = await write((state) => {
+  const updated = await write(req.user.id, (state) => {
     const app = find(state, req.params.id)
     app.timeline ??= []
     if (patch.status && patch.status !== app.status) {
@@ -176,7 +176,7 @@ applications.patch('/:id', async (req, res) => {
 })
 
 applications.delete('/:id', async (req, res) => {
-  await write((state) => {
+  await write(req.user.id, (state) => {
     const index = state.applications.findIndex((a) => a.id === req.params.id)
     if (index === -1) throw notFound('Application')
     state.applications.splice(index, 1)
@@ -189,7 +189,7 @@ applications.delete('/:id', async (req, res) => {
 })
 
 applications.get('/:id/resumes', (req, res) => {
-  const state = read()
+  const state = read(req.user.id)
   find(state, req.params.id)
   res.json(state.resumes.filter((r) => r.applicationId === req.params.id))
 })

@@ -2,7 +2,7 @@ import { api } from './api'
 import type { Resume, ResumeFormat } from '../types'
 
 /** File extensions the picker offers, and what format each maps to. */
-export const IMPORT_ACCEPT = '.md,.markdown,.txt,.tex,.latex,.html,.htm,.json'
+export const IMPORT_ACCEPT = '.pdf,.md,.markdown,.txt,.tex,.latex,.html,.htm,.json'
 
 const BY_EXTENSION: Record<string, ResumeFormat> = {
   md: 'markdown',
@@ -37,7 +37,8 @@ export interface ImportResult {
  * A `.json` file is treated as a DevTrack bundle (or a bare array / single
  * resume object) and goes to the import endpoint, which preserves version
  * history and re-links documents to applications by company name. Anything else
- * becomes a single new document whose format is taken from its extension.
+ * becomes a single new document whose format is taken from its extension —
+ * except a `.pdf`, which is converted to LaTeX first (see `pdfToLatex`).
  */
 export async function importResumeFiles(files: File[]): Promise<ImportResult> {
   const created: Resume[] = []
@@ -45,6 +46,18 @@ export async function importResumeFiles(files: File[]): Promise<ImportResult> {
 
   for (const file of files) {
     try {
+      if (isPdf(file)) {
+        const made = await api.resumes.import({
+          name: file.name.replace(/\.pdf$/i, '') + '.tex',
+          company: companyFrom(file.name),
+          format: 'latex',
+          content: await convertPdf(file),
+          versions: [],
+        })
+        created.push(...made)
+        continue
+      }
+
       const text = await file.text()
 
       if (file.name.toLowerCase().endsWith('.json')) {
@@ -62,7 +75,7 @@ export async function importResumeFiles(files: File[]): Promise<ImportResult> {
       const format = formatFor(file.name, text)
       const made = await api.resumes.import({
         name: file.name,
-        company: file.name.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' '),
+        company: companyFrom(file.name),
         format,
         content: text,
         versions: [],
@@ -77,6 +90,27 @@ export async function importResumeFiles(files: File[]): Promise<ImportResult> {
   }
 
   return { created, skipped }
+}
+
+const companyFrom = (filename: string) =>
+  filename.replace(/\.[^.]+$/, '').replace(/[_-]+/g, ' ')
+
+const isPdf = (file: File) => file.type === 'application/pdf' || /\.pdf$/i.test(file.name)
+
+/** Loads pdfjs only when a PDF is actually imported — it is too heavy for the main bundle. */
+async function convertPdf(file: File): Promise<string> {
+  const [pdfjs, worker, { pdfToLatex }] = await Promise.all([
+    import('pdfjs-dist'),
+    import('pdfjs-dist/build/pdf.worker.min.mjs?url'),
+    import('./pdfToLatex'),
+  ])
+  pdfjs.GlobalWorkerOptions.workerSrc = worker.default
+  const task = pdfjs.getDocument({ data: await file.arrayBuffer() })
+  try {
+    return await pdfToLatex(await task.promise)
+  } finally {
+    void task.destroy()
+  }
 }
 
 /** Human-readable outcome for a toast. */

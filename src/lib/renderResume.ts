@@ -1,4 +1,6 @@
 import type { ResumeFormat } from '../types'
+import { escapeHtml } from './html'
+import { latexPageSetup, renderLatex, type LatexPageSetup } from './renderLatex'
 
 /**
  * Turns resume source into a standalone HTML document that is dropped into the
@@ -6,13 +8,10 @@ import type { ResumeFormat } from '../types'
  * inert — but we still escape everything that is not deliberately emitted.
  */
 
-export function escapeHtml(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-}
+export { escapeHtml }
+
+/** US Letter at 96dpi, with the margin used both on screen and in print. */
+export const PAGE = { width: 816, height: 1056, margin: 57.6 }
 
 /** Bold / italic / code / links, applied to already-escaped text. */
 function inline(text: string): string {
@@ -74,119 +73,12 @@ function renderMarkdown(source: string): string {
   return out.join('\n')
 }
 
-/**
- * A pragmatic renderer for the common "Jake's resume" LaTeX macro set — enough
- * to give a faithful live preview without shipping a TeX engine to the browser.
- * Anything it does not recognise is dropped, exactly like an unused package.
- */
-function renderLatex(source: string): string {
-  // Keep only the document body when the preamble is present.
-  const body = /\\begin\{document\}([\s\S]*?)\\end\{document\}/.exec(source)?.[1] ?? source
-
-  const out: string[] = []
-  let listOpen = false
-
-  const closeList = () => {
-    if (listOpen) {
-      out.push('</ul>')
-      listOpen = false
-    }
-  }
-
-  /** \textbf{x}, \textit{x}, \href{url}{label}, escaped % and &, en-dashes. */
-  const text = (value: string) =>
-    escapeHtml(value)
-      .replace(/\\textbf\{([^}]*)\}/g, '<strong>$1</strong>')
-      .replace(/\\textit\{([^}]*)\}/g, '<em>$1</em>')
-      .replace(/\\emph\{([^}]*)\}/g, '<em>$1</em>')
-      .replace(/\\href\{([^}]*)\}\{([^}]*)\}/g, '<a href="$1">$2</a>')
-      .replace(/--/g, '&ndash;')
-      .replace(/\\([%&$#_{}])/g, '$1')
-      .replace(/\\[a-zA-Z]+/g, '')
-      .trim()
-
-  /** Split `{a}{b}{c}` into its brace groups, respecting nesting. */
-  const groups = (value: string): string[] => {
-    const found: string[] = []
-    let depth = 0
-    let current = ''
-    for (const char of value) {
-      if (char === '{') {
-        depth += 1
-        if (depth === 1) continue
-      } else if (char === '}') {
-        depth -= 1
-        if (depth === 0) {
-          found.push(current)
-          current = ''
-          continue
-        }
-      }
-      if (depth > 0) current += char
-    }
-    return found
-  }
-
-  for (const raw of body.split(/\r?\n/)) {
-    const line = raw.trim()
-    if (!line || line.startsWith('%')) continue
-
-    const command = /^\\([a-zA-Z]+)\s*(.*)$/.exec(line)
-    const name = command?.[1]
-    const rest = command?.[2] ?? ''
-
-    if (name === 'name') {
-      closeList()
-      out.push(`<h1>${text(groups(rest)[0] ?? '')}</h1>`)
-      continue
-    }
-    if (name === 'contact') {
-      closeList()
-      out.push(`<p class="contact">${text(groups(rest)[0] ?? '')}</p>`)
-      continue
-    }
-    if (name === 'section') {
-      closeList()
-      out.push(`<h2>${text(groups(rest)[0] ?? '')}</h2>`)
-      continue
-    }
-    if (name === 'resumeSubheading' || name === 'subheading') {
-      closeList()
-      const [org = '', place = '', role = '', dates = ''] = groups(rest)
-      out.push(
-        `<div class="entry">` +
-          `<div class="entry-row"><span class="org">${text(org)}</span><span class="meta">${text(place)}</span></div>` +
-          `<div class="entry-row"><span class="role">${text(role)}</span><span class="meta">${text(dates)}</span></div>` +
-          `</div>`,
-      )
-      continue
-    }
-    if (name === 'resumeItem' || name === 'item') {
-      if (!listOpen) {
-        out.push('<ul>')
-        listOpen = true
-      }
-      out.push(`<li>${text(groups(rest)[0] ?? rest)}</li>`)
-      continue
-    }
-    // Structural macros (\begin, \end, \usepackage, list start/end…) render nothing.
-    if (name) continue
-
-    closeList()
-    const paragraph = text(line)
-    if (paragraph) out.push(`<p>${paragraph}</p>`)
-  }
-
-  closeList()
-  return out.join('\n')
-}
-
 const PAGE_CSS = `
   :root { color-scheme: light; }
   * { box-sizing: border-box; }
   body {
     margin: 0;
-    padding: 32px 40px 48px;
+    padding: ${PAGE.margin}px;
     background: #ffffff;
     color: #111418;
     font-family: 'Charter', 'Georgia', 'Times New Roman', serif;
@@ -234,8 +126,104 @@ const PAGE_CSS = `
   .role { font-style: italic; }
   .meta { font-size: 10pt; color: #3d444d; white-space: nowrap; }
   .empty { color: #8c959f; font-style: italic; text-align: center; margin-top: 80px; }
-  @page { margin: 0.6in; }
+  .center { text-align: center; }
+  .right { text-align: right; }
+  .sc { font-variant: small-caps; }
+  .bold { font-weight: 700; }
+  .italic { font-style: italic; }
+  .size-Huge { font-size: 24pt; line-height: 1.2; }
+  .size-huge { font-size: 20pt; line-height: 1.2; }
+  .size-LARGE { font-size: 17pt; }
+  .size-Large { font-size: 14pt; }
+  .size-large { font-size: 12pt; }
+  .plain-list { margin: 0 0 6px; }
+  .table { margin: 2px 0; }
+  .entry + ul, .entry + ol { margin-top: 2px; }
+  .page-break { break-after: page; }
+  @page { size: letter; margin: ${PAGE.margin}px; }
+  @media print {
+    body { padding: 0; }
+    /* Same rules as the paginated preview: blocks move whole, headings stay with what follows. */
+    p, li, pre, tr, img, .entry, .entry-row { break-inside: avoid; }
+    h1, h2, h3, h4 { break-after: avoid; }
+  }
 `
+
+/** Computer Modern, so LaTeX previews wrap lines where the PDF would. */
+const CM_FONT_BASE = 'https://cdn.jsdelivr.net/gh/dreampulse/computer-modern-web-font@master/font/Serif/'
+const CM_FONT_FACES = [
+  ['cmunrm', 'normal', 'normal'],
+  ['cmunbx', 'bold', 'normal'],
+  ['cmunti', 'normal', 'italic'],
+  ['cmunbi', 'bold', 'italic'],
+]
+  .map(
+    ([file, weight, style]) =>
+      `@font-face { font-family: 'Computer Modern Serif'; src: local('CMU Serif'), url('${CM_FONT_BASE}${file}.woff') format('woff'); font-weight: ${weight}; font-style: ${style}; font-display: block; }`,
+  )
+  .join('\n')
+
+/** LaTeX's font sizes and baselines (pt) for each class option. */
+const LATEX_SIZES = {
+  10: { normal: [10, 12], small: [9, 11], large: [12, 14], Huge: [20.74, 25] },
+  11: { normal: [10.95, 13.6], small: [10, 12], large: [12, 14], Huge: [24.88, 30] },
+  12: { normal: [12, 14.5], small: [10.95, 13.6], large: [14.4, 18], Huge: [24.88, 30] },
+}
+
+/**
+ * Typesetting that mirrors article.cls + titlesec + Jake's resume macros, so a
+ * LaTeX preview takes the same space as the compiled PDF. The spacings follow
+ * the template's own \vspace tweaks layered on LaTeX's list and section skips.
+ */
+function latexCss({ size, margin }: LatexPageSetup): string {
+  const sizes = LATEX_SIZES[size]
+  const font = ([fontSize, baseline]: number[]) => `font-size: ${fontSize}pt; line-height: ${baseline}pt;`
+  const pad = `${margin.top}px ${margin.right}px ${margin.bottom}px ${margin.left}px`
+  return `
+  ${CM_FONT_FACES}
+  body.latex {
+    padding: ${pad};
+    color: #000;
+    font-family: 'Computer Modern Serif', 'CMU Serif', 'Latin Modern Roman', 'Times New Roman', serif;
+    ${font(sizes.normal)}
+    font-kerning: normal;
+  }
+  .latex a, .latex em { color: inherit; }
+  .latex .size-Huge { ${font(sizes.Huge)} }
+  .latex .size-large { ${font(sizes.large)} }
+  .latex .center { ${font(sizes.small)} margin: 0 0 9pt; }
+  .latex .center .size-Huge { line-height: ${sizes.Huge[0] * 1.05}pt; }
+  .latex h1 { ${font(sizes.Huge)} font-weight: normal; font-variant: small-caps; letter-spacing: 0; margin: 0 0 2pt; }
+  .latex h1 + p, .latex p.contact { ${font(sizes.small)} color: inherit; margin: 0 0 9pt; }
+  .latex h2 {
+    ${font(sizes.large)}
+    font-weight: normal;
+    font-variant: small-caps;
+    text-transform: none;
+    letter-spacing: 0;
+    border-bottom: 0.4pt solid #000;
+    padding-bottom: 1pt;
+    margin: 12.5pt 0 0;
+  }
+  .latex p { margin: 0 0 4pt; }
+  .latex .plain-list { margin: 0; padding-left: 0.15in; }
+  .latex .plain-list > div { ${font(sizes.small)} margin-top: 5.8pt; }
+  .latex .entry { margin-top: 8.5pt; }
+  /* Jake's rows are a tabular* 0.97\textwidth wide, indented 0.15in by the list. */
+  .latex .plain-list > .entry { width: calc(0.97 * (100% + 0.15in)); }
+  .latex h2 + .plain-list > .entry:first-child,
+  .latex h2 + .entry { margin-top: 3.8pt; }
+  .latex .entry-row { gap: 0; line-height: ${sizes.normal[1]}pt; }
+  .latex .entry-row + .entry-row { font-size: ${sizes.small[0]}pt; font-style: italic; }
+  .latex .entry-row > span:first-child:not(.org):not(.role) { font-size: ${sizes.small[0]}pt; }
+  .latex .meta { font-size: inherit; color: inherit; }
+  .latex ul, .latex ol { margin: 0 0 1.5pt; padding-left: 2.2em; }
+  .latex .entry + ul, .latex .entry + ol { margin-top: 0; }
+  .latex li { ${font(sizes.small)} margin: 0 0 2pt; list-style-type: disc; }
+  .latex li::marker { font-size: 0.7em; }
+  @page { margin: ${pad}; }
+`
+}
 
 /** Build the full `srcdoc` document for the preview iframe. */
 export function renderResumeDocument(
@@ -244,6 +232,8 @@ export function renderResumeDocument(
   title = 'Resume preview',
 ): string {
   let inner: string
+  let extraCss = ''
+  let bodyClass = ''
 
   if (!content.trim()) {
     inner = '<p class="empty">Nothing to preview yet — start typing on the left.</p>'
@@ -251,6 +241,8 @@ export function renderResumeDocument(
     inner = renderMarkdown(content)
   } else if (format === 'latex') {
     inner = renderLatex(content)
+    extraCss = latexCss(latexPageSetup(content))
+    bodyClass = ' class="latex"'
   } else {
     // 'html' — the author's own markup, rendered inside the sandboxed frame.
     inner = content
@@ -262,9 +254,9 @@ export function renderResumeDocument(
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>${escapeHtml(title)}</title>
-<style>${PAGE_CSS}</style>
+<style>${PAGE_CSS}${extraCss}</style>
 </head>
-<body>
+<body${bodyClass}>
 ${inner}
 </body>
 </html>`

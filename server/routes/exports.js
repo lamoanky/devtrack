@@ -24,8 +24,8 @@ function cell(value) {
   return /[",\n\r]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text
 }
 
-exports_.get('/applications.csv', (_req, res) => {
-  const { applications, resumes } = read()
+exports_.get('/applications.csv', (req, res) => {
+  const { applications, resumes } = read(req.user.id)
   const byId = new Map(resumes.map((r) => [r.id, r]))
 
   const lines = [COLUMNS.map(([header]) => cell(header)).join(',')]

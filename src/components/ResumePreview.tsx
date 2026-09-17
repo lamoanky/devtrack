@@ -1,6 +1,10 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Icon } from './Icon'
-import { renderResumeDocument } from '../lib/renderResume'
+import { Menu, MenuItem } from './Menu'
+import { PAGE, renderResumeDocument } from '../lib/renderResume'
+import { downloadResumePdf } from '../lib/printResume'
+import { paginate } from '../lib/paginate'
+import { usePersistentState } from '../hooks/usePersistentState'
 import type { Resume } from '../types'
 
 interface Props {
@@ -10,6 +14,9 @@ interface Props {
 }
 
 const ZOOMS = [50, 67, 80, 90, 100, 125, 150]
+
+/** Space between page sheets, in unscaled pixels. */
+const PAGE_GAP = 24
 
 /**
  * The embedded document view.
@@ -22,7 +29,11 @@ const ZOOMS = [50, 67, 80, 90, 100, 125, 150]
  */
 export function ResumePreview({ resume, content }: Props) {
   const frame = useRef<HTMLIFrameElement>(null)
-  const [zoom, setZoom] = useState(100)
+  const viewport = useRef<HTMLDivElement>(null)
+  // 'fit' scales the page to the pane's width (never past 100%), so a narrow
+  // pane shows the whole page instead of a horizontally scrolling slice.
+  const [zoomMode, setZoomMode] = usePersistentState<number | 'fit'>('devtrack.previewZoom', 'fit')
+  const [fitZoom, setFitZoom] = useState(100)
 
   const isExternal = resume.format === 'embed'
   const srcDoc = useMemo(
@@ -30,30 +41,52 @@ export function ResumePreview({ resume, content }: Props) {
     [isExternal, content, resume.format, resume.name],
   )
 
-  const step = (direction: 1 | -1) => {
-    const index = ZOOMS.indexOf(zoom)
-    const next = ZOOMS[Math.min(ZOOMS.length - 1, Math.max(0, index + direction))]
-    setZoom(next)
-  }
-
-  /** Browser print dialog on the rendered document — the "save as PDF" path. */
-  const print = () => {
-    const view = frame.current?.contentWindow
-    if (!view) return
-    view.focus()
-    view.print()
-  }
-
-  const openStandalone = () => {
-    if (isExternal) {
-      if (resume.embedUrl) window.open(resume.embedUrl, '_blank', 'noopener')
-      return
+  useLayoutEffect(() => {
+    const element = viewport.current
+    if (!element) return
+    const measure = () => {
+      const style = getComputedStyle(element)
+      const available =
+        element.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight)
+      setFitZoom(Math.max(25, Math.min(100, Math.floor((available / PAGE.width) * 100))))
     }
-    const blob = new Blob([srcDoc ?? ''], { type: 'text/html' })
-    const url = URL.createObjectURL(blob)
-    window.open(url, '_blank', 'noopener')
-    // Give the new tab time to load before releasing the object URL.
-    setTimeout(() => URL.revokeObjectURL(url), 60_000)
+    measure()
+    const observer = new ResizeObserver(measure)
+    observer.observe(element)
+    return () => observer.disconnect()
+  }, [isExternal, resume.embedUrl])
+
+  const [pages, setPages] = useState(1)
+
+  // Split the rendered document into pages once it loads (every edit reloads
+  // the srcdoc), and again when web fonts settle and change line heights.
+  useEffect(() => {
+    const iframe = frame.current
+    if (isExternal || !iframe) return
+    const layout = () => {
+      const doc = iframe.contentDocument
+      if (!doc?.body) return
+      // Transparent, so the sheets drawn behind the frame show through.
+      doc.documentElement.style.background = 'transparent'
+      doc.body.style.background = 'transparent'
+      const run = () => {
+        if (iframe.contentDocument === doc) setPages(paginate(doc, { height: PAGE.height, gap: PAGE_GAP }))
+      }
+      run()
+      void doc.fonts?.ready.then(run)
+    }
+    iframe.addEventListener('load', layout)
+    layout()
+    return () => iframe.removeEventListener('load', layout)
+  }, [isExternal])
+
+  const sheetHeight = pages * PAGE.height + (pages - 1) * PAGE_GAP
+  const zoom = zoomMode === 'fit' ? fitZoom : zoomMode
+
+  const step = (direction: 1 | -1) => {
+    const next =
+      direction === 1 ? ZOOMS.find((z) => z > zoom) : [...ZOOMS].reverse().find((z) => z < zoom)
+    if (next !== undefined) setZoomMode(next)
   }
 
   const download = () => {
@@ -86,9 +119,16 @@ export function ResumePreview({ resume, content }: Props) {
               >
                 <Icon name="zoom_out" size={16} />
               </button>
-              <span className="w-11 text-center font-mono text-body-sm text-on-surface-variant">
+              <button
+                className={`w-12 rounded-md py-[2px] text-center font-mono text-body-sm hover:bg-surface-container-high ${
+                  zoomMode === 'fit' ? 'text-primary' : 'text-on-surface-variant'
+                }`}
+                onClick={() => setZoomMode('fit')}
+                title={zoomMode === 'fit' ? 'Fitting page to width' : 'Fit page to width'}
+                aria-pressed={zoomMode === 'fit'}
+              >
                 {zoom}%
-              </span>
+              </button>
               <button
                 className="btn-ghost btn-sm"
                 onClick={() => step(1)}
@@ -98,17 +138,43 @@ export function ResumePreview({ resume, content }: Props) {
                 <Icon name="zoom_in" size={16} />
               </button>
               <span className="mx-xs h-4 w-px bg-outline-variant" />
-              <button className="btn-ghost btn-sm" onClick={print} title="Print / save as PDF">
-                <Icon name="print" size={16} />
-              </button>
-              <button className="btn-ghost btn-sm" onClick={download} title="Download source">
-                <Icon name="download" size={16} />
-              </button>
+              <Menu
+                label="Download"
+                className="w-48"
+                triggerClassName="btn-ghost btn-sm"
+                trigger={
+                  <>
+                    <Icon name="download" size={16} />
+                    Download
+                    <Icon name="expand_more" size={16} />
+                  </>
+                }
+              >
+                {(close) => (
+                  <>
+                    <MenuItem
+                      icon="code"
+                      onSelect={() => {
+                        close()
+                        download()
+                      }}
+                    >
+                      Source file
+                    </MenuItem>
+                    <MenuItem
+                      icon="picture_as_pdf"
+                      onSelect={() => {
+                        close()
+                        downloadResumePdf(resume, content)
+                      }}
+                    >
+                      PDF
+                    </MenuItem>
+                  </>
+                )}
+              </Menu>
             </>
           )}
-          <button className="btn-ghost btn-sm" onClick={openStandalone} title="Open in a new tab">
-            <Icon name="open_in_new" size={16} />
-          </button>
         </div>
       </div>
 
@@ -117,7 +183,7 @@ export function ResumePreview({ resume, content }: Props) {
           Add an embed URL in the document settings to view this resume here.
         </div>
       ) : (
-        <div className="min-h-0 flex-1 overflow-auto p-lg">
+        <div ref={viewport} className="min-h-0 flex-1 overflow-auto p-lg">
           {isExternal ? (
             <iframe
               ref={frame}
@@ -128,22 +194,34 @@ export function ResumePreview({ resume, content }: Props) {
               referrerPolicy="no-referrer"
             />
           ) : (
+            // A transform does not change layout size, so the outer box takes the
+            // scaled dimensions — that keeps it centred and the scroll extent honest.
             <div
-              className="mx-auto origin-top transition-transform"
-              style={{
-                width: 816, // 8.5in at 96dpi
-                transform: `scale(${zoom / 100})`,
-                // Keep the scroll extent honest as the page scales.
-                marginBottom: zoom < 100 ? 0 : `${(zoom / 100 - 1) * 1056}px`,
-              }}
+              className="mx-auto"
+              style={{ width: (PAGE.width * zoom) / 100, height: (sheetHeight * zoom) / 100 }}
             >
-              <iframe
-                ref={frame}
-                title={`${resume.name} preview`}
-                srcDoc={srcDoc}
-                sandbox="allow-same-origin allow-modals"
-                className="h-[1056px] w-full rounded-md border border-outline-variant bg-white shadow-overlay"
-              />
+              <div
+                className="relative origin-top-left transition-transform"
+                style={{ width: PAGE.width, height: sheetHeight, transform: `scale(${zoom / 100})` }}
+              >
+                {Array.from({ length: pages }, (_, index) => (
+                  <div
+                    key={index}
+                    aria-hidden="true"
+                    className="absolute inset-x-0 rounded-md border border-outline-variant bg-white shadow-overlay"
+                    style={{ top: index * (PAGE.height + PAGE_GAP), height: PAGE.height }}
+                  />
+                ))}
+                <iframe
+                  ref={frame}
+                  title={`${resume.name} preview`}
+                  srcDoc={srcDoc}
+                  sandbox="allow-same-origin allow-modals"
+                  // A matching color-scheme keeps the frame's canvas transparent.
+                  style={{ height: sheetHeight, colorScheme: 'light' }}
+                  className="relative block w-full border-0 bg-transparent"
+                />
+              </div>
             </div>
           )}
         </div>

@@ -1,6 +1,14 @@
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 import express from 'express'
+
+// Optional `.env` in the project root (GOOGLE_CLIENT_ID, PORT, …).
+try {
+  process.loadEnvFile(path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '.env'))
+} catch {
+  // No .env — environment variables alone are fine.
+}
+
 import cors from 'cors'
 
 import { applications } from './routes/applications.js'
@@ -15,16 +23,15 @@ import {
   RESUME_FORMATS,
   RESUME_ASSIGNMENT_MODES,
 } from './model.js'
-import { ensureSeed } from './seed.js'
+import { auth, loadUser, requireUser } from './auth.js'
 
 const root = path.dirname(fileURLToPath(import.meta.url))
 const PORT = Number(process.env.PORT ?? 5174)
 
-await ensureSeed()
-
 const app = express()
 app.use(cors())
 app.use(express.json({ limit: '2mb' }))
+app.use(loadUser)
 
 app.get('/api/health', (_req, res) => {
   res.json({
@@ -35,12 +42,15 @@ app.get('/api/health', (_req, res) => {
     resumeAssignmentModes: RESUME_ASSIGNMENT_MODES,
   })
 })
-app.use('/api/applications', applications)
-app.use('/api/resumes', resumes)
-app.use('/api/stats', stats)
-app.use('/api/export', exports_)
-app.use('/api/logo', logos)
-app.use('/api/settings', settings)
+app.use('/api/auth', auth)
+
+// Everything below belongs to the signed-in user's workspace.
+app.use('/api/applications', requireUser, applications)
+app.use('/api/resumes', requireUser, resumes)
+app.use('/api/stats', requireUser, stats)
+app.use('/api/export', requireUser, exports_)
+app.use('/api/logo', requireUser, logos)
+app.use('/api/settings', requireUser, settings)
 
 // In production the built SPA is served from the same origin as the API.
 const dist = path.join(root, '..', 'dist')

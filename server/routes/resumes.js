@@ -53,7 +53,7 @@ function forgetDefaultIfGone(state, resumeId) {
 resumes.get('/', (req, res) => {
   const { applicationId, q = '' } = req.query
   const needle = String(q).trim().toLowerCase()
-  let rows = read().resumes.slice()
+  let rows = read(req.user.id).resumes.slice()
 
   if (applicationId) rows = rows.filter((r) => r.applicationId === applicationId)
   if (needle) {
@@ -71,8 +71,8 @@ resumes.get('/', (req, res) => {
  *
  * Registered before `/:id` so the literal path wins the match.
  */
-resumes.get('/export', (_req, res) => {
-  const state = read()
+resumes.get('/export', (req, res) => {
+  const state = read(req.user.id)
   const bundle = {
     kind: 'devtrack.resumes',
     version: 1,
@@ -101,7 +101,7 @@ resumes.get('/export', (_req, res) => {
 
 /** Download a single document as its native source file. */
 resumes.get('/:id/download', (req, res) => {
-  const resume = find(read(), req.params.id)
+  const resume = find(read(req.user.id), req.params.id)
   const extension = FORMAT_EXTENSION[resume.format] ?? 'txt'
   const filename = resume.name.includes('.') ? resume.name : `${resume.name}.${extension}`
 
@@ -122,7 +122,7 @@ resumes.post('/import', async (req, res) => {
   if (incoming.length === 0) throw badRequest('Nothing to import')
   if (incoming.length > 200) throw badRequest('Refusing to import more than 200 documents at once')
 
-  const created = await write((state) => {
+  const created = await write(req.user.id, (state) => {
     const made = []
 
     for (const [index, raw] of incoming.entries()) {
@@ -193,11 +193,11 @@ resumes.post('/import', async (req, res) => {
 })
 
 resumes.get('/:id', (req, res) => {
-  res.json(find(read(), req.params.id))
+  res.json(find(read(req.user.id), req.params.id))
 })
 
 resumes.post('/', async (req, res) => {
-  const state = read()
+  const state = read(req.user.id)
   const patch = validate(pick(req.body ?? {}, EDITABLE), state)
   requireString(patch.name ?? '', 'name')
 
@@ -216,12 +216,12 @@ resumes.post('/', async (req, res) => {
   }
   resume.versions.push(snapshot(resume, 'v1.0', 'Initial draft'))
 
-  await write((s) => s.resumes.push(resume))
+  await write(req.user.id, (s) => s.resumes.push(resume))
   res.status(201).json(resume)
 })
 
 resumes.patch('/:id', async (req, res) => {
-  const updated = await write((state) => {
+  const updated = await write(req.user.id, (state) => {
     const resume = find(state, req.params.id)
     const patch = validate(pick(req.body ?? {}, EDITABLE), state)
     Object.assign(resume, patch, { updatedAt: now() })
@@ -231,7 +231,7 @@ resumes.patch('/:id', async (req, res) => {
 })
 
 resumes.delete('/:id', async (req, res) => {
-  await write((state) => {
+  await write(req.user.id, (state) => {
     const index = state.resumes.findIndex((r) => r.id === req.params.id)
     if (index === -1) throw notFound('Resume')
     state.resumes.splice(index, 1)
@@ -245,7 +245,7 @@ resumes.delete('/:id', async (req, res) => {
 
 /** Freeze the current document as a named version. */
 resumes.post('/:id/versions', async (req, res) => {
-  const created = await write((state) => {
+  const created = await write(req.user.id, (state) => {
     const resume = find(state, req.params.id)
     const label = String(req.body?.label ?? '').trim() || nextVersionLabel(resume)
     const version = snapshot(resume, label, req.body?.note)
@@ -258,7 +258,7 @@ resumes.post('/:id/versions', async (req, res) => {
 
 /** Roll the document back to a version, keeping the pre-restore state as history. */
 resumes.post('/:id/versions/:versionId/restore', async (req, res) => {
-  const updated = await write((state) => {
+  const updated = await write(req.user.id, (state) => {
     const resume = find(state, req.params.id)
     const version = resume.versions.find((v) => v.id === req.params.versionId)
     if (!version) throw notFound('Version')
@@ -274,7 +274,7 @@ resumes.post('/:id/versions/:versionId/restore', async (req, res) => {
 })
 
 resumes.delete('/:id/versions/:versionId', async (req, res) => {
-  await write((state) => {
+  await write(req.user.id, (state) => {
     const resume = find(state, req.params.id)
     const index = resume.versions.findIndex((v) => v.id === req.params.versionId)
     if (index === -1) throw notFound('Version')
@@ -288,7 +288,7 @@ resumes.delete('/:id/versions/:versionId', async (req, res) => {
  * Fork a resume for another company — the core "tailored per application" move.
  */
 resumes.post('/:id/duplicate', async (req, res) => {
-  const created = await write((state) => {
+  const created = await write(req.user.id, (state) => {
     const source = find(state, req.params.id)
     const patch = validate(pick(req.body ?? {}, ['name', 'company', 'applicationId']), state)
     const copy = forkResume(source, patch)

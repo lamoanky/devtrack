@@ -134,3 +134,13 @@ export interface ResumeBundle {
   exportedAt: string
   resumes: ResumeExport[]
 }
+
+export interface User {
+  id: string
+  username: string | null
+  email: string | null
+  /** Display name: the Google profile name, else the username. */
+  name: string
+  avatarUrl: string | null
+  provider: 'password' | 'google'
+}
